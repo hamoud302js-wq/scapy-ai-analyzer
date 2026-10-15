@@ -106,6 +106,9 @@ class PromptBundle:
     included_flow_refs: list[str]
     included_alert_refs: list[str]
     truncated: bool = False
+    # True when the configured byte limit is smaller than the fixed envelope, so
+    # no valid request can be built. The user prompt is empty in that case.
+    over_budget: bool = False
 
     @property
     def approx_bytes(self) -> int:
@@ -355,14 +358,19 @@ class PromptBuilder:
         total_bytes = len(user_prompt.encode("utf-8")) + len(
             system_prompt_for(cfg.language).encode("utf-8")
         )
+        over_budget = not user_prompt
         if total_bytes > cfg.max_prompt_bytes:
-            # A hard budget violation would mean the limit logic failed; surface it
-            # rather than sending an oversized request.
+            over_budget = True
+        if over_budget:
+            # The fixed envelope (system prompt + header/footer) plus any payload
+            # cannot fit inside the configured budget, so the limit is impossible
+            # to honour. The caller refuses to send the request.
             truncated = True
             logger = logging.getLogger("scapy_ai_analyzer.ai")
             logger.warning(
-                "AI prompt exceeded the configured byte limit (%d > %d).",
-                total_bytes,
+                "AI prompt cannot fit the configured byte limit (%d > %d); "
+                "the request will not be sent. Raise ai.max_prompt_bytes.",
+                max(total_bytes, cfg.max_prompt_bytes + 1),
                 cfg.max_prompt_bytes,
             )
 
@@ -373,6 +381,7 @@ class PromptBuilder:
             included_flow_refs=[f.flow_id for f in chosen_flows],
             included_alert_refs=[a.alert_id for a in chosen_alerts],
             truncated=truncated,
+            over_budget=over_budget,
         )
 
     def _render_user_prompt(
@@ -397,9 +406,12 @@ class PromptBuilder:
         def fits(body_text: str) -> bool:
             return len(header.encode()) + len(body_text.encode()) + len(footer.encode()) <= budget
 
+        def assemble(body_text: str) -> str:
+            return f"{header}{UNTRUSTED_BEGIN}\n{body_text}\n{UNTRUSTED_END}{footer}"
+
         body = json.dumps(payload, ensure_ascii=False, indent=2)
         if fits(body):
-            return f"{header}{UNTRUSTED_BEGIN}\n{body}\n{UNTRUSTED_END}{footer}", False
+            return assemble(body), False
 
         # Trim the most verbose sections progressively until the budget is met.
         for limit in (10, 5, 2, 1, 0):
@@ -414,7 +426,7 @@ class PromptBuilder:
             payload["truncated_for_size"] = True
             body = json.dumps(payload, ensure_ascii=False, indent=2)
             if fits(body):
-                return f"{header}{UNTRUSTED_BEGIN}\n{body}\n{UNTRUSTED_END}{footer}", True
+                return assemble(body), True
 
         # Last resort: session totals only, with compact separators.
         minimal = {
@@ -423,20 +435,29 @@ class PromptBuilder:
             "truncated_for_size": True,
         }
         body = json.dumps(minimal, ensure_ascii=False, separators=(",", ":"))
-        if not fits(body):
-            # The session summary alone exceeds the budget: drop the per-host and
-            # top-N detail, which are the largest remaining fields.
-            session = minimal["session"]
-            for key in (
-                "top_src_ips",
-                "top_dst_ips",
-                "top_dst_ports",
-                "host_volume_outliers",
-                "dns",
-                "protocol_counts",
-                "transport_counts",
-            ):
-                session.pop(key, None)
-            session["note"] = "Detailed statistics omitted because the size limit was reached."
-            body = json.dumps(minimal, ensure_ascii=False, separators=(",", ":"))
-        return f"{header}{UNTRUSTED_BEGIN}\n{body}\n{UNTRUSTED_END}{footer}", True
+        if fits(body):
+            return assemble(body), True
+
+        # The session summary alone exceeds the budget: drop the per-host and
+        # top-N detail, which are the largest remaining fields.
+        session = minimal["session"]
+        for key in (
+            "top_src_ips",
+            "top_dst_ips",
+            "top_dst_ports",
+            "host_volume_outliers",
+            "dns",
+            "protocol_counts",
+            "transport_counts",
+        ):
+            session.pop(key, None)
+        session["note"] = "Detailed statistics omitted because the size limit was reached."
+        body = json.dumps(minimal, ensure_ascii=False, separators=(",", ":"))
+        if fits(body):
+            return assemble(body), True
+
+        # The fixed envelope plus a minimal payload cannot fit inside the budget,
+        # so the configured limit is impossible to honour. Return an empty user
+        # prompt (which always fits) and let the caller refuse to send, rather
+        # than transmitting an oversized request.
+        return "", True

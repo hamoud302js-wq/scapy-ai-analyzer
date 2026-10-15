@@ -213,6 +213,26 @@ class AIService:
                 request_metadata=request_metadata,
             )
 
+        if prompt.over_budget:
+            message = (
+                "AI prompt exceeds the configured byte limit "
+                f"(ai.max_prompt_bytes={self.config.max_prompt_bytes}); the request was "
+                "not sent. Increase the limit to enable AI analysis."
+            )
+            return AIAnalysisResult(
+                finding=build_rejected_finding(message, provider_name, self.config.model),
+                provider=provider_name,
+                model=self.config.model,
+                succeeded=False,
+                prompt_bytes=prompt.approx_bytes,
+                truncated=True,
+                included_packet_refs=prompt.included_packet_refs,
+                included_flow_refs=prompt.included_flow_refs,
+                included_alert_refs=prompt.included_alert_refs,
+                errors=["prompt_over_budget"],
+                request_metadata=request_metadata,
+            )
+
         request = AIRequest(
             system_prompt=prompt.system_prompt,
             user_prompt=prompt.user_prompt,

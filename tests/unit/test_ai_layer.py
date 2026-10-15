@@ -444,6 +444,104 @@ class TestPromptBuilder:
         assert bundle.approx_bytes <= 8000
         assert bundle.truncated
 
+    def test_impossible_budget_is_never_exceeded(self):
+        """A limit smaller than the fixed envelope must not produce an oversized
+        prompt. Regression: the budget was only logged, and the oversized request
+        was sent anyway."""
+        from scapy.layers.inet import IP, TCP
+        from scapy.layers.l2 import Ether
+
+        packets = []
+        for i in range(50):
+            packet = Ether() / IP(src="192.0.2.1", dst="198.51.100.1") / TCP(
+                sport=1000 + i, dport=443, flags="S"
+            )
+            packet.time = 1700000000.0 + i
+            packets.append(packet)
+        records, flows, statistics, alerts, store = _analysis(packets)
+
+        # Sweep well below, at, and around the fixed envelope size.
+        for limit in (100, 500, 1200, 1430, 1500, 2000, 3000):
+            config = AIConfig(max_prompt_bytes=limit)
+            bundle = PromptBuilder(config).build(statistics, flows, alerts, records, "t.pcap")
+            # The invariant is: either the prompt fits the limit, or it is flagged
+            # as over budget so the caller refuses to send it. It must never be an
+            # oversized prompt that is sent anyway.
+            assert bundle.approx_bytes <= limit or bundle.over_budget, (
+                f"prompt of {bundle.approx_bytes} bytes exceeded the {limit} byte "
+                "limit without being flagged over budget"
+            )
+            if bundle.over_budget:
+                assert bundle.user_prompt == ""
+
+    def test_impossible_budget_is_flagged_and_not_sent(self):
+        """When no valid prompt fits, the bundle is flagged and the service
+        refuses to call the provider."""
+        from scapy.layers.inet import IP, TCP
+        from scapy.layers.l2 import Ether
+
+        packets = []
+        for i in range(50):
+            packet = Ether() / IP(src="192.0.2.1", dst="198.51.100.1") / TCP(
+                sport=1000 + i, dport=443, flags="S"
+            )
+            packet.time = 1700000000.0 + i
+            packets.append(packet)
+        records, flows, statistics, alerts, store = _analysis(packets)
+
+        config = AIConfig(max_prompt_bytes=200)
+        bundle = PromptBuilder(config).build(statistics, flows, alerts, records, "t.pcap")
+        assert bundle.over_budget
+        assert bundle.user_prompt == ""
+
+        class RecordingProvider(AIProvider):
+            name = "recording"
+
+            def __init__(self):
+                super().__init__(model="recording-1")
+                self.calls = 0
+
+            def is_available(self):
+                return True
+
+            def complete(self, request):
+                self.calls += 1
+                return AIResponse(text="{}", provider=self.name, model=self.model, attempts=1)
+
+        provider = RecordingProvider()
+        result = AIService(config, provider=provider).analyze(
+            statistics=statistics,
+            flows=flows,
+            alerts=alerts,
+            records=records,
+            store=store,
+            source="t.pcap",
+        )
+        assert provider.calls == 0, "the provider must not be called with an oversized prompt"
+        assert result.succeeded is False
+        assert "prompt_over_budget" in result.errors
+
+    def test_default_budget_does_not_degrade_the_prompt(self):
+        """The shipped default limit must leave room for real evidence, so the
+        fix cannot silently gut normal prompts."""
+        from scapy.layers.inet import IP, TCP
+        from scapy.layers.l2 import Ether
+
+        packets = []
+        for i in range(50):
+            packet = Ether() / IP(src="192.0.2.1", dst="198.51.100.1") / TCP(
+                sport=1000 + i, dport=443, flags="S"
+            )
+            packet.time = 1700000000.0 + i
+            packets.append(packet)
+        records, flows, statistics, alerts, store = _analysis(packets)
+        config = AIConfig()  # shipped defaults
+        bundle = PromptBuilder(config).build(statistics, flows, alerts, records, "t.pcap")
+        assert not bundle.over_budget
+        assert bundle.user_prompt
+        assert bundle.included_packet_refs
+        assert bundle.approx_bytes <= config.max_prompt_bytes
+
     def test_evidence_packet_selection_prioritizes_alert_packets(self):
         from scapy.layers.inet import IP, TCP
         from scapy.layers.l2 import Ether
