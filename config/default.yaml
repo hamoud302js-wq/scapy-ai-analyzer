@@ -1,0 +1,52 @@
+# Scapy AI Analyzer - default configuration
+# Copy to a local file and pass with --config. Never put API keys in this file;
+# set SCAPY_AI_API_KEY in the environment instead.
+
+capture:
+  batch_size: 5000          # packets processed per batch (streaming)
+  max_packets: null         # optional hard cap on packets read
+  interface: null           # default live capture interface
+  duration: null            # default live capture duration in seconds
+  snaplen: 65535
+  promisc: true
+
+analysis:
+  flow_idle_timeout: 120.0        # seconds; gap that ends a flow
+  scan_window_seconds: 60.0       # sliding window for scan detection
+  scan_min_distinct_ports: 15     # distinct dst ports from one src in window
+  scan_min_flows: 15              # minimum flows before a scan alert fires
+  fanout_min_distinct_destinations: 30
+  dns_window_seconds: 60.0
+  dns_min_queries: 50             # queries per src in window to raise volume alert
+  dns_nxdomain_ratio: 0.5         # NXDOMAIN share that raises an alert
+  host_volume_zscore: 3.0         # z-score for per-host volume anomaly
+
+ai:
+  enabled: true
+  provider: mock            # mock | openai_compatible
+  model: null
+  base_url: null
+  timeout_seconds: 30.0
+  max_retries: 2
+  max_evidence_packets: 25
+  max_evidence_flows: 20
+  max_evidence_alerts: 30
+  max_prompt_bytes: 200000
+  language: en              # en | ar
+
+privacy:
+  redact_private_ips: false
+  include_raw_payloads: false     # raw payloads are never sent to AI by default
+  redact_mac_addresses: false
+
+report:
+  output_dir: results
+  formats:
+    - json
+    - html
+  include_packet_details: true
+  max_packets_in_report: 5000
+
+logging:
+  level: INFO
+  format: text              # text | json

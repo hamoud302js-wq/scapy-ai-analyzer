@@ -1,0 +1,52 @@
+# Byte-compiled files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Build and distribution
+build/
+dist/
+*.egg-info/
+.eggs/
+wheels/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Test and tool caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+coverage.xml
+
+# Analysis output: session reports can contain sensitive capture data
+results/
+*.session/
+out/
+
+# Capture files: never commit real traffic captures.
+# The synthetic captures under tests/fixtures/ are generated locally by
+# tools/generate_test_pcaps.py and contain no real traffic.
+*.pcap
+*.pcapng
+*.cap
+!tests/fixtures/*.pcap
+!tests/fixtures/*.pcapng
+
+# Secrets
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+
+# Editors and OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
